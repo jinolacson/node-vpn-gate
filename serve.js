@@ -1,84 +1,73 @@
 #!/usr/bin/env node
 
-/* Pick server and start connection with VPNGate (http://www.vpngate.net/en/) */
-
 const request = require('request');
-const { execFileSync } = require('child_process');
-const { tmpNameSync } = require('tmp');
 const fs = require('fs');
+const os = require('os');
+const { spawn } = require('child_process');
 
-// Required configuration
-const server = 'http://www.vpngate.net/api/iphone/'
 const country = process.argv[2];
-const command = process.argv[1]
+const command = process.argv[1];
+const api_server = 'http://www.vpngate.net/api/iphone/'
 
-if (process.argv.length !== 3) {
-  console.log(`usage: ${command} [country name | country code]`);
+if (!country) {
+  console.error('usage: ' + command + ' [country name | country code]');
   process.exit(1);
 }
 
-let search_country;
+let country_length;
 if (country.length === 2) {
-  search_country = 6; // short name for country
+  country_length = 6; // short name for country
 } else if (country.length > 2) {
-  search_country = 5; // long name for country
+  country_length = 5; // long name for country
 } else {
-  console.log('Country is too short!');
+  console.error('Country is too short!');
   process.exit(1);
 }
 
-request.get(server, async (error, response, body) => {
-  if (error || response.statusCode !== 200) {
-    console.log('Cannot get VPN servers data');
+request(api_server, (error, response, body) => {
+  if (error) {
+    console.error('Cannot get VPN servers data');
     process.exit(1);
   }
-
   const vpn_data = body.replace(/\r/g, '');
-  const servers = vpn_data.split('\n').map(line => line.split(','));
-  const labels = servers[1];
-  labels[0] = labels[0].substring(1);
-  const filteredServers = servers.filter(s => s.length > 1);
-  const desired = filteredServers.filter(s => s[search_country].toLowerCase().includes(country.toLowerCase()));
+  const servers = vpn_data.split('\n').map((line) => line.split(','));
+  const labels = servers[1].map((label) => label.slice(1));
+  servers.splice(0, 2);
+  const desired = servers.filter((s) => s.length > 1 && s[country_length].toLowerCase().includes(country.toLowerCase()));
   const found = desired.length;
   console.log(`Found ${found} servers for country ${country}`);
   if (found === 0) {
     process.exit(1);
   }
-
-  const supported = desired.filter(s => s[s.length - 1].length > 0);
+  const supported = desired.filter((s) => s[s.length - 1].length > 0);
   console.log(`${supported.length} of these servers support OpenVPN`);
-  // We pick the best servers by score
   const winner = supported.sort((a, b) => parseFloat(b[2].replace(',', '.')) - parseFloat(a[2].replace(',', '.')))[0];
+  console.log('\n== Best server ==');
+  const pairs = labels.slice(0, -1).map((l, i) => `${l}: ${winner[i]}`);
+  pairs.push(`${labels[4]}: ${parseFloat(winner[4]) / 10 ** 6} MBps`);
+  pairs.push(`Country: ${winner[5]}`);
+  console.log(pairs.join('\n'));
 
-  console.log("\n== Best server ==");
-  const pairs = labels.slice(0, -1).map((l, index) => [l, winner[index]]);
-  for (const [l, d] of pairs.slice(0, 4)) {
-    console.log(`${l}: ${d}`);
-  }
-  console.log(`${pairs[4][0]}: ${parseFloat(pairs[4][1]) / 10 ** 6} MBps`);
-  console.log(`Country: ${pairs[5][1]}`);
-
-  console.log("\nLaunching VPN...");
-  const path = tmpNameSync();
-  fs.writeFileSync(path, Buffer.from(winner[winner.length - 1], 'base64'));
-  fs.appendFileSync(path, '\nscript-security 2\nup /etc/openvpn/update-resolv-conf\ndown /etc/openvpn/update-resolv-conf');
-
-  const child = execFileSync('sudo', ['openvpn', '--config', path], { stdio: 'ignore', detached: true });
-  try {
-    while (true) {
-      // sleep for 10 minutes
-      await new Promise(resolve => setTimeout(resolve, 600000));
-    }
-  } catch {
+  console.log('\nLaunching VPN...');
+  const path = `${os.tmpdir()}/openvpn.conf`;
+  const content = Buffer.from(winner[winner.length - 1], 'base64').toString('ascii');
+  const lines = content.split('\n');
+  lines.splice(1, 0, 'script-security 2');
+  lines.splice(2, 0, 'up /etc/openvpn/update-resolv-conf');
+  lines.splice(3, 0, 'down /etc/openvpn/update-resolv-conf');
+  const finalContent = lines.join('\n');
+  fs.writeFileSync(path, finalContent);
+  const child = spawn('sudo', ['openvpn', '--config', path], { stdio: 'inherit' });
+  const handler = () => {
     try {
       child.kill();
-    } catch {
-      // do nothing
-    }
-    while (child.status === null) {
-      // wait for the child process to exit
-      await new Promise(resolve => setTimeout(resolve, 1000));
+    } catch (err) {}
+    while (child.exitCode === null) {
+      // wait for child process to exit
     }
     console.log('\nVPN terminated');
-  }
+    process.exit();
+  };
+  process.on('SIGINT', handler);
+  process.on('SIGTERM', handler);
 });
