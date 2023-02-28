@@ -18,9 +18,11 @@ sudo node serve.js US # or sudo node serve.js "United States"
 ```
 ### Demo
 * Successfully connected
+
 ![Connection image](country-japan.png "")
 
 * IP check
+
 ![Connection image](demo.png "")
 
 ### Disconnect from the server
